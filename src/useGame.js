@@ -5,9 +5,11 @@ import {
   buildCard,
   countsCover,
   emptyState,
+  foldEvent,
   hasBingo,
   hashString,
   mergeSnapshot,
+  noticesForUpdate,
   sanitizeName,
   stateCounts,
   toSnapshot,
@@ -72,6 +74,7 @@ export function useGame({ code, name, clientId, preview, ablyKey }) {
   const seenRef = useRef(new Set());
   const toastedRef = useRef(new Set());
   const announcedRef = useRef(false);
+  const pendingBingoRef = useRef([]);
   const syncedRef = useRef(false);
   const nameRef = useRef(name);
   const snapshotTimerRef = useRef(null);
@@ -94,59 +97,53 @@ export function useGame({ code, name, clientId, preview, ablyKey }) {
     setNotices((current) => current.filter((notice) => notice.id !== id));
   }, []);
 
-  const announceFrom = useCallback((previous, next) => {
-    for (const [hunterId, targets] of Object.entries(next.heard || {})) {
-      const hit = targets?.[clientId];
-      if (!hit || previous.heard?.[hunterId]?.[clientId]) continue;
-      const hunter = next.players.find((player) => player.id === hunterId);
-      pushNotice({
-        id: `kw-${hunterId}-${clientId}`,
-        kind: "keyword",
-        hunterName: hunter?.name || "Someone",
-        word: hit.word,
-      });
-    }
-    for (const [playerId, win] of Object.entries(next.winners || {})) {
-      if (previous.winners?.[playerId]) continue;
-      pushNotice({
-        id: `bingo-${playerId}`,
-        kind: playerId === clientId ? "self-bingo" : "bingo",
-        name: win.name,
-      });
+  const announceFrom = useCallback((previous, next, event) => {
+    for (const notice of noticesForUpdate(previous, next, clientId, event)) {
+      pushNotice(notice);
     }
   }, [clientId, pushNotice]);
 
-  const maybeAnnounceBingo = useCallback((next) => {
-    if (!preview && !syncedRef.current) return;
-    if (next.winners?.[clientId]) {
+  const buildBingo = useCallback((next) => {
+    if (!preview && !syncedRef.current) return null;
+    if (announcedRef.current) return null;
+    if (next?.winners?.[clientId]) {
       announcedRef.current = true;
-      return;
+      return null;
     }
-    if (announcedRef.current) return;
-    if (!hasBingo(next.marks?.[clientId])) return;
-    const me = next.players.find((player) => player.id === clientId);
-    if (!me) return;
-    announcedRef.current = true;
-    publishRef.current({
+    if (!hasBingo(next?.marks?.[clientId])) return null;
+    const me = next.players?.find((player) => player.id === clientId);
+    if (!me) return null;
+    return {
       type: "bingo",
       playerId: clientId,
       name: me.name,
       at: Date.now(),
-    });
+    };
   }, [clientId, preview]);
 
   const ingest = useCallback((event, { live }) => {
     const previous = stateRef.current;
-    const { state: next, accepted } = applyEvent(previous, event, roomCode);
-    if (accepted) commit(next);
-    if (live && accepted) announceFrom(previous, accepted ? next : previous);
-    if (accepted && (event.type === "mark" || event.type === "bingo")) maybeAnnounceBingo(next);
-    return accepted;
-  }, [announceFrom, commit, maybeAnnounceBingo, roomCode]);
+    const folded = foldEvent(previous, event, roomCode, pendingBingoRef.current);
+    pendingBingoRef.current = folded.pending;
+    if (!folded.accepted) return false;
+    commit(folded.state);
+    if (live) announceFrom(previous, folded.state, event);
+    return true;
+  }, [announceFrom, commit, roomCode]);
+
+  const publishRef = useRef(() => false);
+
+  const publishOwnBingo = useCallback(() => {
+    const bingoEvent = buildBingo(stateRef.current);
+    if (bingoEvent) publishRef.current(bingoEvent);
+  }, [buildBingo]);
 
   const ingestSnapshot = useCallback((snapshot, { live }) => {
     const previous = stateRef.current;
-    const next = mergeSnapshot(previous, snapshot, roomCode);
+    const merged = mergeSnapshot(previous, snapshot, roomCode);
+    const caughtUp = foldEvent(merged, { type: "catchup" }, roomCode, pendingBingoRef.current);
+    pendingBingoRef.current = caughtUp.pending;
+    const next = caughtUp.state;
     commit(next);
     peerCountsRef.current = stateCounts({
       players: snapshot.players || [],
@@ -154,12 +151,12 @@ export function useGame({ code, name, clientId, preview, ablyKey }) {
       heard: snapshot.heard || {},
       winners: snapshot.winners || {},
     });
-    if (live) announceFrom(previous, next);
-    maybeAnnounceBingo(next);
-  }, [announceFrom, commit, maybeAnnounceBingo, roomCode]);
+    if (live) announceFrom(previous, next, { type: "snapshot" });
+    publishOwnBingo();
+  }, [announceFrom, commit, publishOwnBingo, roomCode]);
 
-  const publishRef = useRef(() => false);
   const flushRef = useRef(async () => {});
+  const scheduleSnapshotRef = useRef(() => {});
 
   const flush = useCallback(async () => {
     if (preview || flushingRef.current) return;
@@ -183,11 +180,27 @@ export function useGame({ code, name, clientId, preview, ablyKey }) {
 
   const publish = useCallback((event) => {
     const accepted = ingest(event, { live: true });
-    if (!accepted || preview) return accepted;
-    outboxRef.current.push(event);
+    if (!accepted) return false;
+    const extras = [];
+    if (event.type === "bingo" && event.playerId === clientId) announcedRef.current = true;
+    if (event.type === "mark") {
+      const bingoEvent = buildBingo(stateRef.current);
+      if (bingoEvent) {
+        const bingoAccepted = ingest(bingoEvent, { live: true });
+        if (bingoAccepted) {
+          announcedRef.current = true;
+          extras.push(bingoEvent);
+        }
+      }
+    }
+    if (preview) return true;
+    outboxRef.current.push(event, ...extras);
+    if ((event.type === "bingo" && event.playerId === clientId) || extras.length) {
+      scheduleSnapshotRef.current();
+    }
     flushRef.current();
-    return accepted;
-  }, [ingest, preview]);
+    return true;
+  }, [buildBingo, clientId, ingest, preview]);
 
   publishRef.current = publish;
 
@@ -207,6 +220,8 @@ export function useGame({ code, name, clientId, preview, ablyKey }) {
       publishSnapshot();
     }, wait);
   }, [clientId, publishSnapshot]);
+
+  scheduleSnapshotRef.current = scheduleSnapshot;
 
   useEffect(() => {
     let cancelled = false;
@@ -235,6 +250,7 @@ export function useGame({ code, name, clientId, preview, ablyKey }) {
     if (preview) {
       syncedRef.current = true;
       announcedRef.current = false;
+      pendingBingoRef.current = [];
       (async () => {
         const stored = await loadRoom(PRACTICE_CODE);
         if (cancelled) return;
@@ -250,7 +266,7 @@ export function useGame({ code, name, clientId, preview, ablyKey }) {
         commit(next);
         setConnection("live");
         setError("");
-        maybeAnnounceBingo(next);
+        publishOwnBingo();
       })();
       return () => {
         cancelled = true;
@@ -265,6 +281,7 @@ export function useGame({ code, name, clientId, preview, ablyKey }) {
 
     syncedRef.current = false;
     announcedRef.current = false;
+    pendingBingoRef.current = [];
     seenRef.current = new Set();
     setConnection("connecting");
     setError("");
@@ -316,6 +333,7 @@ export function useGame({ code, name, clientId, preview, ablyKey }) {
         }
 
         let next = emptyState();
+        let pending = [];
         try {
           const history = await readHistory(channel);
           for (const message of history) {
@@ -323,8 +341,13 @@ export function useGame({ code, name, clientId, preview, ablyKey }) {
             const data = message.data || {};
             if (message.name === "snapshot" || data.type === "snapshot") {
               next = mergeSnapshot(next, data, roomCode);
+              const caughtUp = foldEvent(next, { type: "catchup" }, roomCode, pending);
+              next = caughtUp.state;
+              pending = caughtUp.pending;
             } else if (data.type && data.type !== "hello") {
-              next = applyEvent(next, data, roomCode).state;
+              const folded = foldEvent(next, data, roomCode, pending);
+              next = folded.state;
+              pending = folded.pending;
             }
           }
         } catch (historyError) {
@@ -333,12 +356,18 @@ export function useGame({ code, name, clientId, preview, ablyKey }) {
         }
 
         const local = await loadRoom(roomCode);
-        if (local) next = mergeSnapshot(next, local, roomCode);
+        if (local) {
+          next = mergeSnapshot(next, local, roomCode);
+          const caughtUp = foldEvent(next, { type: "catchup" }, roomCode, pending);
+          next = caughtUp.state;
+          pending = caughtUp.pending;
+        }
         if (cancelled) {
           await closeClient();
           return;
         }
 
+        pendingBingoRef.current = pending;
         commit(next);
         if (next.winners?.[clientId]) announcedRef.current = true;
 
@@ -387,7 +416,7 @@ export function useGame({ code, name, clientId, preview, ablyKey }) {
         ready = true;
         for (const message of buffer) applyMessage(message, true);
         setConnection("live");
-        maybeAnnounceBingo(stateRef.current);
+        publishOwnBingo();
         channel.publish("hello", {
           type: "hello",
           from: clientId,
@@ -428,7 +457,7 @@ export function useGame({ code, name, clientId, preview, ablyKey }) {
       syncedRef.current = false;
       closeClient();
     };
-  }, [ablyKey, attempt, clientId, commit, ingest, ingestSnapshot, maybeAnnounceBingo, preview, roomCode, scheduleSnapshot]);
+  }, [ablyKey, attempt, clientId, commit, ingest, ingestSnapshot, preview, publishOwnBingo, roomCode, scheduleSnapshot]);
 
   const players = useMemo(
     () => state.players.map((player, seat) => ({
@@ -504,6 +533,7 @@ export function useGame({ code, name, clientId, preview, ablyKey }) {
   const resetPractice = useCallback(() => {
     if (!preview) return;
     announcedRef.current = false;
+    pendingBingoRef.current = [];
     toastedRef.current = new Set();
     setNotices([]);
     const next = practiceState(clientId, nameRef.current);

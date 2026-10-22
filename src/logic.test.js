@@ -14,6 +14,8 @@ const {
   displayName,
   stateCounts,
   countsCover,
+  foldEvent,
+  noticesForUpdate,
 } = require("./logic");
 
 function seats(n) {
@@ -179,5 +181,67 @@ assert.strictEqual(displayName(names[1], names), "Sam (2)");
 const counts = stateCounts(bingo.state);
 assert.ok(countsCover({ players: 1, marks: 0, heard: 0, winners: 0 }, counts));
 assert.strictEqual(countsCover(counts, { players: 2, marks: 0, heard: 0, winners: 0 }), false);
+
+let raced = withPlayers(3);
+const racedCard = buildCard("TABLE1", "p0");
+for (let cell = 0; cell < 4; cell += 1) {
+  raced = applyEvent(raced, {
+    type: "mark",
+    playerId: "p0",
+    cell,
+    prompt: racedCard[cell],
+    giverId: "p1",
+    at: 60 + cell,
+  }, "TABLE1").state;
+}
+const winningMark = {
+  type: "mark",
+  playerId: "p0",
+  cell: 4,
+  prompt: racedCard[4],
+  giverId: "p1",
+  at: 70,
+};
+const earlyBingo = { type: "bingo", playerId: "p0", name: "Impostor", at: 71 };
+const rejected = foldEvent(raced, earlyBingo, "TABLE1", []);
+assert.strictEqual(rejected.accepted, false);
+assert.strictEqual(rejected.state.winners.p0, undefined);
+assert.strictEqual(rejected.pending.length, 1);
+const recovered = foldEvent(rejected.state, winningMark, "TABLE1", rejected.pending);
+assert.strictEqual(recovered.accepted, true);
+assert.strictEqual(recovered.pending.length, 0);
+assert.strictEqual(recovered.state.winners.p0.name, "Friend 0");
+
+const inOrder = foldEvent(foldEvent(raced, winningMark, "TABLE1", []).state, earlyBingo, "TABLE1", []);
+assert.strictEqual(inOrder.accepted, true);
+assert.ok(inOrder.state.winners.p0);
+
+const beforeHeard = withPlayers(3);
+const heardWord = wordFor("TABLE1", 0, 1);
+const afterHeard = applyEvent(beforeHeard, {
+  type: "keyword",
+  hunterId: "p0",
+  targetId: "p1",
+  word: heardWord,
+  at: 80,
+}, "TABLE1").state;
+const keywordEvent = { type: "keyword", hunterId: "p0", targetId: "p1", word: heardWord };
+assert.strictEqual(noticesForUpdate(beforeHeard, afterHeard, "p1", keywordEvent)[0].kind, "keyword");
+assert.strictEqual(noticesForUpdate(beforeHeard, afterHeard, "p0", keywordEvent).length, 0);
+assert.strictEqual(noticesForUpdate(beforeHeard, afterHeard, "p2", keywordEvent).length, 0);
+assert.strictEqual(noticesForUpdate(beforeHeard, afterHeard, "p1", { type: "snapshot" }).length, 0);
+
+const winnerNotices = noticesForUpdate(recovered.state, recovered.state, "p0", earlyBingo);
+assert.strictEqual(winnerNotices.length, 0);
+const tableNotices = noticesForUpdate(raced, recovered.state, "p2", winningMark);
+assert.deepStrictEqual(
+  tableNotices.map((notice) => notice.kind),
+  ["bingo"],
+);
+const selfNotices = noticesForUpdate(raced, recovered.state, "p0", winningMark);
+assert.deepStrictEqual(
+  selfNotices.map((notice) => notice.kind),
+  ["bingo", "self-bingo"],
+);
 
 console.log(`logic ok · ${WORDS.length} words · ${PROMPTS.length} prompts`);

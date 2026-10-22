@@ -2,11 +2,12 @@ import { useEffect } from "react";
 import { Modal, Pressable, StyleSheet, Text, View } from "react-native";
 import { colors, fonts } from "../theme";
 
-function BingoBanner({ notice, onDismiss }) {
+function BingoBanner({ notice, onDismiss, paused }) {
   useEffect(() => {
+    if (paused) return undefined;
     const timer = setTimeout(() => onDismiss(notice.id), 9000);
     return () => clearTimeout(timer);
-  }, [notice.id, onDismiss]);
+  }, [notice.id, onDismiss, paused]);
 
   return (
     <View style={styles.banner}>
@@ -29,7 +30,7 @@ export function Notices({ notices, onDismiss }) {
     <View pointerEvents="box-none" style={styles.host}>
       <View pointerEvents="box-none" style={styles.banners}>
         {banners.map((notice) => (
-          <BingoBanner key={notice.id} notice={notice} onDismiss={onDismiss} />
+          <BingoBanner key={notice.id} notice={notice} onDismiss={onDismiss} paused={Boolean(modal)} />
         ))}
       </View>
       <Modal visible={Boolean(modal)} transparent animationType="fade" onRequestClose={() => modal && onDismiss(modal.id)}>

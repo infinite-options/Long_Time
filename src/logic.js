@@ -340,6 +340,75 @@ function countsCover(mine, other) {
   );
 }
 
+function foldEvent(state, event, gameCode, pending) {
+  let waiting = Array.isArray(pending) ? pending.slice() : [];
+  const applied = applyEvent(state, event, gameCode);
+  let next = applied.accepted ? applied.state : state;
+  let changed = applied.accepted;
+
+  if (event?.type === "bingo" && !applied.accepted) {
+    const playerId = String(event.playerId || "");
+    if (playerId && !next.winners?.[playerId]) {
+      waiting = waiting.filter((item) => item.playerId !== playerId);
+      waiting.push(event);
+    }
+  }
+
+  const still = [];
+  for (const bingo of waiting) {
+    if (!bingo || next.winners?.[bingo.playerId]) continue;
+    const retry = applyEvent(next, bingo, gameCode);
+    if (retry.accepted) {
+      next = retry.state;
+      changed = true;
+    } else {
+      still.push(bingo);
+    }
+  }
+
+  return {
+    state: changed ? next : state,
+    accepted: changed,
+    pending: still,
+  };
+}
+
+function noticesForUpdate(previous, next, clientId, event) {
+  const notices = [];
+  const prior = previous || emptyState();
+  const current = next || emptyState();
+  if (event?.type === "keyword" && event.targetId === clientId) {
+    const hunterId = String(event.hunterId || "");
+    const hit = current.heard?.[hunterId]?.[clientId];
+    if (hit && !prior.heard?.[hunterId]?.[clientId]) {
+      const hunter = (current.players || []).find((player) => player.id === hunterId);
+      notices.push({
+        id: `kw-${hunterId}-${clientId}`,
+        kind: "keyword",
+        hunterName: hunter?.name || "Someone",
+        word: hit.word,
+        targetId: clientId,
+      });
+    }
+  }
+  for (const [playerId, win] of Object.entries(current.winners || {})) {
+    if (prior.winners?.[playerId]) continue;
+    notices.push({
+      id: `bingo-${playerId}`,
+      kind: "bingo",
+      name: win.name,
+    });
+    if (playerId === clientId) {
+      notices.push({
+        id: `self-bingo-${playerId}`,
+        kind: "self-bingo",
+        name: win.name,
+      });
+    }
+  }
+  return notices;
+}
+
 function makeCode() {
   const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
   const bytes = new Uint8Array(6);
@@ -374,5 +443,7 @@ module.exports = {
   toSnapshot,
   stateCounts,
   countsCover,
+  foldEvent,
+  noticesForUpdate,
   makeCode,
 };
