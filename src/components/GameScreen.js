@@ -2,18 +2,19 @@ import { useState } from "react";
 import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import * as Clipboard from "expo-clipboard";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { displayName, winningCells, wordFor } from "../logic";
+import { conflictingCells, displayName, winningCells, wordFor } from "../logic";
 import { colors, fonts } from "../theme";
 import { useGame } from "../useGame";
 import { BingoBoard } from "./BingoBoard";
 import { KeywordList } from "./KeywordList";
 import { Notices } from "./Notices";
-import { PersonModal } from "./PersonModal";
+import { MoveConfirm, PersonModal } from "./PersonModal";
 
 export function GameScreen({ session, clientId, ablyKey, onLeave }) {
   const insets = useSafeAreaInsets();
   const [tab, setTab] = useState("bingo");
   const [activeCell, setActiveCell] = useState(null);
+  const [move, setMove] = useState(null);
   const [confirmLeave, setConfirmLeave] = useState(false);
   const [copied, setCopied] = useState(false);
   const game = useGame({
@@ -169,12 +170,24 @@ export function GameScreen({ session, clientId, ablyKey, onLeave }) {
       </View>
 
       <PersonModal
-        visible={activeCell != null}
+        visible={activeCell != null && !move}
         prompt={activePrompt}
         players={game.players}
         meId={game.me.id}
         markedId={activeMark?.cleared ? null : activeMark?.giverId}
         onPick={(giverId) => {
+          const conflicts = conflictingCells(game.marks, activeCell, giverId);
+          if (conflicts.length) {
+            const person = game.players.find((player) => player.id === giverId);
+            setMove({
+              giverId,
+              cell: activeCell,
+              name: person ? displayName(person, game.players) : "them",
+              answers: conflicts.map((index) => plainPrompt(game.card[index])),
+              cells: conflicts,
+            });
+            return;
+          }
           game.markCell(activeCell, giverId);
           setActiveCell(null);
         }}
@@ -184,12 +197,28 @@ export function GameScreen({ session, clientId, ablyKey, onLeave }) {
         }}
         onClose={() => setActiveCell(null)}
       />
+      <MoveConfirm
+        visible={Boolean(move)}
+        name={move?.name}
+        answers={move?.answers || []}
+        onYes={() => {
+          for (const cell of move.cells) game.markCell(cell, null);
+          game.markCell(move.cell, move.giverId);
+          setMove(null);
+          setActiveCell(null);
+        }}
+        onNo={() => setMove(null)}
+      />
     </View>
   );
 }
 
 function spaced(code) {
   return String(code || "").split("").join(" ");
+}
+
+function plainPrompt(prompt) {
+  return String(prompt || "").replace(/\.$/, "");
 }
 
 const styles = StyleSheet.create({

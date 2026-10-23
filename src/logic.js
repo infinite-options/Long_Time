@@ -129,6 +129,21 @@ function isFilled(cells, index) {
   return Boolean(mark && mark.giverId && !mark.cleared);
 }
 
+function conflictingCells(cells, cell, giverId) {
+  const found = [];
+  const target = Number(cell);
+  if (!giverId || !Number.isInteger(target)) return found;
+  for (const line of BINGO_LINES) {
+    if (!line.includes(target)) continue;
+    for (const index of line) {
+      if (index === target || found.includes(index)) continue;
+      const mark = cells?.[index] ?? cells?.[String(index)];
+      if (mark && mark.giverId === giverId && !mark.cleared) found.push(index);
+    }
+  }
+  return found;
+}
+
 function hasBingo(cells) {
   if (!cells) return false;
   return BINGO_LINES.some((line) => line.every((index) => isFilled(cells, index)));
@@ -192,7 +207,7 @@ function applyEvent(state, event, gameCode) {
         if (!prev || at >= (prev.at || 0)) {
           if (event.giverId) {
             const giver = next.players.find((player) => player.id === event.giverId);
-            if (giver) {
+            if (giver && giver.id !== playerId && conflictingCells(next.marks[playerId], cell, giver.id).length === 0) {
               next.marks[playerId][String(cell)] = {
                 giverId: giver.id,
                 giverName: giver.name,
@@ -436,6 +451,7 @@ module.exports = {
   isValidCode,
   emptyState,
   hasBingo,
+  conflictingCells,
   winningCells,
   displayName,
   applyEvent,

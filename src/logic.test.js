@@ -7,6 +7,7 @@ const {
   wordFor,
   buildCard,
   hasBingo,
+  conflictingCells,
   winningCells,
   applyEvent,
   mergeSnapshot,
@@ -92,6 +93,41 @@ state = applyEvent(state, {
 }, "TABLE1").state;
 assert.strictEqual(state.marks.p0["0"].giverId, "p1");
 
+const selfMark = applyEvent(state, {
+  type: "mark",
+  playerId: "p0",
+  cell: 1,
+  prompt: card[1],
+  giverId: "p0",
+  at: 11,
+}, "TABLE1");
+assert.strictEqual(selfMark.accepted, false);
+assert.strictEqual(selfMark.state.marks.p0["1"], undefined);
+
+assert.deepStrictEqual(conflictingCells(state.marks.p0, 1, "p1"), [0]);
+assert.deepStrictEqual(conflictingCells(state.marks.p0, 5, "p1"), [0]);
+assert.deepStrictEqual(conflictingCells(state.marks.p0, 6, "p1"), [0]);
+assert.deepStrictEqual(conflictingCells(state.marks.p0, 8, "p1"), []);
+const sameRow = applyEvent(state, {
+  type: "mark",
+  playerId: "p0",
+  cell: 1,
+  prompt: card[1],
+  giverId: "p1",
+  at: 11,
+}, "TABLE1");
+assert.strictEqual(sameRow.accepted, false);
+assert.strictEqual(sameRow.state.marks.p0["0"].giverId, "p1");
+const sameDiagonal = applyEvent(state, {
+  type: "mark",
+  playerId: "p0",
+  cell: 6,
+  prompt: card[6],
+  giverId: "p1",
+  at: 11,
+}, "TABLE1");
+assert.strictEqual(sameDiagonal.accepted, false);
+
 const spoof = applyEvent(state, {
   type: "mark",
   playerId: "p0",
@@ -111,6 +147,16 @@ state = applyEvent(state, {
   at: 12,
 }, "TABLE1").state;
 assert.strictEqual(state.marks.p0["0"].cleared, true);
+const moved = applyEvent(state, {
+  type: "mark",
+  playerId: "p0",
+  cell: 1,
+  prompt: card[1],
+  giverId: "p1",
+  at: 13,
+}, "TABLE1");
+assert.strictEqual(moved.accepted, true);
+assert.strictEqual(moved.state.marks.p0["1"].giverId, "p1");
 
 const stale = applyEvent(state, {
   type: "mark",
@@ -144,7 +190,7 @@ assert.strictEqual(fakeWord.accepted, false);
 const fakeBingo = applyEvent(heard.state, { type: "bingo", playerId: "p0", name: "Impostor", at: 30 }, "TABLE1");
 assert.strictEqual(fakeBingo.accepted, false);
 
-let winner = withPlayers(2);
+let winner = withPlayers(6);
 const winnerCard = buildCard("TABLE1", "p0");
 for (let cell = 0; cell < 5; cell += 1) {
   winner = applyEvent(winner, {
@@ -152,7 +198,7 @@ for (let cell = 0; cell < 5; cell += 1) {
     playerId: "p0",
     cell,
     prompt: winnerCard[cell],
-    giverId: "p1",
+    giverId: `p${cell + 1}`,
     at: 40 + cell,
   }, "TABLE1").state;
 }
@@ -161,14 +207,14 @@ assert.strictEqual(bingo.accepted, true);
 assert.strictEqual(bingo.state.winners.p0.name, "Friend 0");
 
 const merged = mergeSnapshot(emptyState(), {
-  players: seats(2),
+  players: seats(6),
   marks: winner.marks,
   heard: {},
   winners: {},
 }, "TABLE1");
-assert.strictEqual(merged.players.length, 2);
+assert.strictEqual(merged.players.length, 6);
 assert.strictEqual(merged.marks.p0["0"].giverId, "p1");
-const mergedWin = mergeSnapshot(merged, { players: seats(2), marks: winner.marks, heard: {}, winners: bingo.state.winners }, "TABLE1");
+const mergedWin = mergeSnapshot(merged, { players: seats(6), marks: winner.marks, heard: {}, winners: bingo.state.winners }, "TABLE1");
 assert.ok(mergedWin.winners.p0);
 
 const names = [
@@ -182,7 +228,7 @@ const counts = stateCounts(bingo.state);
 assert.ok(countsCover({ players: 1, marks: 0, heard: 0, winners: 0 }, counts));
 assert.strictEqual(countsCover(counts, { players: 2, marks: 0, heard: 0, winners: 0 }), false);
 
-let raced = withPlayers(3);
+let raced = withPlayers(6);
 const racedCard = buildCard("TABLE1", "p0");
 for (let cell = 0; cell < 4; cell += 1) {
   raced = applyEvent(raced, {
@@ -190,7 +236,7 @@ for (let cell = 0; cell < 4; cell += 1) {
     playerId: "p0",
     cell,
     prompt: racedCard[cell],
-    giverId: "p1",
+    giverId: `p${cell + 1}`,
     at: 60 + cell,
   }, "TABLE1").state;
 }
@@ -199,7 +245,7 @@ const winningMark = {
   playerId: "p0",
   cell: 4,
   prompt: racedCard[4],
-  giverId: "p1",
+  giverId: "p5",
   at: 70,
 };
 const earlyBingo = { type: "bingo", playerId: "p0", name: "Impostor", at: 71 };

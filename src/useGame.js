@@ -486,6 +486,7 @@ export function useGame({ code, name, clientId, preview, ablyKey }) {
 
   const markCell = useCallback((cell, giverId) => {
     if (me.seat < 0 || (!preview && connection !== "live")) return;
+    if (giverId && giverId === clientId) return;
     publish({
       type: "mark",
       playerId: clientId,
